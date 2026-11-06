@@ -11,3 +11,5 @@ wheels/
 
 # Downloaded and generated data (re-create with the scripts in src/)
 data/
+results_train.log
+results/predictions.parquet

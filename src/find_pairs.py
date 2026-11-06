@@ -1,20 +1,28 @@
 """Find low-cost PM sensors (Sensor.Community) located next to EEA reference stations.
 
-Inputs (downloaded into data/raw/):
+Inputs (downloaded into data/raw/ on first run):
   eea_stations.csv       EEA station/sampling-point metadata (DataExtract)
-  sc_sensors_24h.json    Sensor.Community sensors active in the last 24 h
+  sc_sensors_24h.json    Sensor.Community sensors active in the last 24 h. This is a
+                         snapshot, so a later run finds a slightly different set of
+                         sensors; the study used the snapshot of 2026-11-06.
 
 Output:
   data/interim/pairs.csv           one row per (low-cost sensor, reference station) within MAX_DIST_M
   data/interim/pairs_selected.csv  pairs kept for the study (see selection rule in main)
 """
 
+import io
 import json
+import zipfile
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import requests
 from sklearn.neighbors import BallTree
+
+EEA_STATIONS_URL = "https://discomap.eea.europa.eu/App/AQViewer/download?fqn=Airquality_Dissem.b2g.measurements&f=csv"
+SC_SENSORS_URL = "https://data.sensor.community/static/v2/data.24h.json"
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw"
@@ -26,6 +34,22 @@ EARTH_RADIUS_M = 6_371_000
 
 PM_SENSOR_TYPES = {"SDS011", "SPS30", "PMS5003", "PMS7003", "PMS1003", "PMS3003", "PMS6003", "HPM", "NextPM", "SDS021"}
 HUMIDITY_SENSOR_TYPES = {"BME280", "DHT22", "SHT31", "SHT30", "SHT35", "HTU21D", "SHT85"}
+
+
+def ensure_inputs() -> None:
+    RAW.mkdir(parents=True, exist_ok=True)
+    stations = RAW / "eea_stations.csv"
+    if not stations.exists():
+        r = requests.get(EEA_STATIONS_URL, timeout=600)
+        r.raise_for_status()
+        with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+            stations.write_bytes(z.read(z.namelist()[0]))
+    sensors = RAW / "sc_sensors_24h.json"
+    if not sensors.exists():
+        r = requests.get(SC_SENSORS_URL, timeout=600,
+                         headers={"User-Agent": "pm-sensor-correction research script (github.com/pboric)"})
+        r.raise_for_status()
+        sensors.write_bytes(r.content)
 
 
 def load_reference_stations() -> pd.DataFrame:
@@ -86,6 +110,7 @@ def load_low_cost_sensors() -> pd.DataFrame:
 
 
 def main() -> None:
+    ensure_inputs()
     stations = load_reference_stations()
     sensors = load_low_cost_sensors()
 

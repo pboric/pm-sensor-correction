@@ -12,6 +12,7 @@ Methods (each fitted on the training folds only):
                 kappa chosen on the training folds
   gbm_weather   LightGBM with sensor values + weather
   gbm_full      LightGBM with sensor values + weather + CAMS dust/aerosol/CO
+  gbm_no_sensor LightGBM with weather + CAMS only (no sensor): what CAMS achieves alone
 
 Episode definitions (agreed 2026-11-06):
   dust   CAMS surface dust >= 10 ug/m3 AND reference PM2.5/PM10 <= 0.5
@@ -63,7 +64,7 @@ def station_groups(df: pd.DataFrame) -> pd.Series:
 def add_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     local_hour = (df["time"].dt.hour + df["ref_lon"] / 15) % 24  # approximate solar time
-    doy = df["time"].dt.dayofyear
+    doy = df["time"].dt.day_of_year
     df["hour_sin"], df["hour_cos"] = np.sin(2 * np.pi * local_hour / 24), np.cos(2 * np.pi * local_hour / 24)
     df["doy_sin"], df["doy_cos"] = np.sin(2 * np.pi * doy / 365.25), np.cos(2 * np.pi * doy / 365.25)
     df["lc_ratio"] = df["pm25_lc"] / df["pm10_lc"].where(df["pm10_lc"] > 0)
@@ -106,7 +107,9 @@ def fit_predict(train: pd.DataFrame, test: pd.DataFrame, lc: str, ref: str) -> d
     preds["kohler"] = m.predict((test[lc] / kohler_factor(test["relative_humidity_2m"], kappa)).to_frame())
 
     base = ["pm25_lc", "pm10_lc", "lc_ratio", "sensor_type"] + TIME
-    for name, feats in (("gbm_weather", base + WEATHER), ("gbm_full", base + WEATHER + CAMS)):
+    # gbm_no_sensor: same inputs minus the sensor - shows what the sensor itself adds over CAMS
+    for name, feats in (("gbm_weather", base + WEATHER), ("gbm_full", base + WEATHER + CAMS),
+                        ("gbm_no_sensor", TIME + WEATHER + CAMS)):
         g = lgb.LGBMRegressor(**GBM_PARAMS).fit(train[feats], train[ref])
         preds[name] = np.clip(g.predict(test[feats]), 0, None)
     preds["_kappa"] = kappa
@@ -135,7 +138,7 @@ def main() -> None:
     for target, (lc, ref) in TARGETS.items():
         d = df.dropna(subset=[lc, ref]).reset_index(drop=True)
         out = {k: np.full(len(d), np.nan) for k in
-               ("raw", "linear", "linear_rh", "kohler", "gbm_weather", "gbm_full")}
+               ("raw", "linear", "linear_rh", "kohler", "gbm_weather", "gbm_full", "gbm_no_sensor")}
         for fold, (tr, te) in enumerate(GroupKFold(n_splits=5).split(d, groups=d["group"])):
             p = fit_predict(d.iloc[tr], d.iloc[te], lc, ref)
             print(f"  {target} fold {fold + 1}/5 done (kappa={p.pop('_kappa')})", flush=True)
@@ -160,7 +163,7 @@ def main() -> None:
     pd.concat(pred_frames).to_parquet(RESULTS / "predictions.parquet", index=False)
     show = res.pivot_table(index=["target", "subset"], columns="method", values="rmse").round(1)
     print("\nRMSE (ug/m3) on unseen stations:\n", show[["raw", "linear", "linear_rh", "kohler", "gbm_weather",
-                                                       "gbm_full"]].to_string())
+                                                       "gbm_full", "gbm_no_sensor"]].to_string())
     print("\nR2 on unseen stations:\n", res.pivot_table(index=["target", "subset"], columns="method",
                                                        values="r2").round(2).to_string())
 
