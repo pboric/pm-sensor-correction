@@ -5,7 +5,8 @@ Inputs (downloaded into data/raw/):
   sc_sensors_24h.json    Sensor.Community sensors active in the last 24 h
 
 Output:
-  data/interim/pairs.csv  one row per (low-cost sensor, reference station) within MAX_DIST_M
+  data/interim/pairs.csv           one row per (low-cost sensor, reference station) within MAX_DIST_M
+  data/interim/pairs_selected.csv  pairs kept for the study (see selection rule in main)
 """
 
 import json
@@ -18,6 +19,7 @@ from sklearn.neighbors import BallTree
 ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw"
 OUT = ROOT / "data" / "interim" / "pairs.csv"
+SELECTED = ROOT / "data" / "interim" / "pairs_selected.csv"
 
 MAX_DIST_M = 500
 EARTH_RADIUS_M = 6_371_000
@@ -100,6 +102,14 @@ def main() -> None:
     pairs = pd.DataFrame(pairs).sort_values("distance_m")
     OUT.parent.mkdir(parents=True, exist_ok=True)
     pairs.to_csv(OUT, index=False)
+
+    # Selection rule (chosen 2026-11-06): traffic stations have steep street-level
+    # gradients, so only accept sensors within 100 m; background/industrial within 500 m.
+    traffic = pairs["ref_station_type"] == "traffic"
+    selected = pairs[(traffic & (pairs["distance_m"] <= 100)) | (~traffic & (pairs["distance_m"] <= 500))]
+    selected.to_csv(SELECTED, index=False)
+    print(f"Selected pairs (traffic <=100 m, others <=500 m): {len(selected)} "
+          f"({selected['ref_station_code'].nunique()} stations) -> {SELECTED.relative_to(ROOT)}")
 
     print(f"Reference stations (automatic PM, 2025): {len(stations)}")
     print(f"Outdoor low-cost PM sensors active in last 24 h: {len(sensors)}")
