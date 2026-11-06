@@ -143,6 +143,10 @@ case: calibrating sensors in a new city that has no co-located reference.
 - **Time.** Validation holds out stations, not years; performance on future years was not tested
   separately.
 
+## Walkthrough notebook (Croatian)
+
+[`notebooks/vodic_kroz_analizu.ipynb`](notebooks/vodic_kroz_analizu.ipynb) goes through the whole analysis step by step in Croatian: data, time alignment, sensor errors, the κ-Köhler correction, why validation is grouped by station (with a random-split comparison), results, feature importance and practice questions. It runs in under a minute on the processed data: `uv run jupyter lab`.
+
 ## Reproduce
 
 Requires [uv](https://docs.astral.sh/uv/). Downloads are about 1.5 GB and are kept in `data/`
