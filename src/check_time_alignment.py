@@ -12,6 +12,8 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 INTERIM = ROOT / "data" / "interim"
+MIN_HOURS = 2000  # minimum overlap to trust a station time correction
+MIN_R = 0.3       # below this the sensor does not follow the reference at all
 
 
 def main() -> None:
@@ -49,6 +51,23 @@ def main() -> None:
     if len(off):
         print("pairs where another shift fits better:")
         print(off.sort_values("country").to_string(index=False))
+
+    # Per-station correction: a few stations label hours differently (e.g. hour-end).
+    # Checked 2026-11-06: their offsets are the same in summer and winter, so this is
+    # not a daylight-saving problem. Use the best shift of the station's longest pair,
+    # but only with enough data (>= MIN_HOURS) to trust it.
+    longest = res.sort_values("n_hours", ascending=False).drop_duplicates("station")
+    longest["offset_h"] = longest["best_lag_h"].where(longest["n_hours"] >= MIN_HOURS, 0)
+    longest[["station", "offset_h"]].rename(columns={"station": "station_code"}).to_csv(
+        INTERIM / "station_time_offsets.csv", index=False)
+    fixed = longest[longest["offset_h"] != 0]
+    print(f"\nstation time corrections applied: {dict(zip(fixed['station'], fixed['offset_h']))}")
+
+    # Pairs where the sensor does not follow the reference at all (broken or not
+    # measuring the same air) are excluded from the study.
+    bad = res[res["r_best"] < MIN_R]
+    bad[["sensor_id", "station"]].to_csv(INTERIM / "excluded_pairs.csv", index=False)
+    print(f"pairs excluded for no relationship (r < {MIN_R}): {bad[['sensor_id', 'station']].values.tolist()}")
 
 
 if __name__ == "__main__":
