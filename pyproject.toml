@@ -1,0 +1,24 @@
+[project]
+name = "pm-sensor-correction"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "Petar Krešimir Borić", email = "112004618+pboric@users.noreply.github.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "lightgbm>=4.7.0",
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.4",
+    "pandas>=3.1.1",
+    "pyarrow>=26.0.1",
+    "requests>=2.34.2",
+    "scikit-learn>=1.9.1",
+]
+
+[project.scripts]
+pm-sensor-correction = "pm_sensor_correction:main"
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"
