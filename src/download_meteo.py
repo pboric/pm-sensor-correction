@@ -29,7 +29,8 @@ APIS = {
     "airquality": ("https://air-quality-api.open-meteo.com/v1/air-quality",
                    ["dust", "aerosol_optical_depth", "pm10", "pm2_5", "carbon_monoxide"]),
 }
-HOURLY_BUDGET, DAILY_BUDGET = 4_500, 9_000  # stay below the free limits (5,000 / 10,000)
+# Stay below the free limits (600 per minute, 5,000 per hour, 10,000 per day)
+MINUTE_BUDGET, HOURLY_BUDGET, DAILY_BUDGET = 500, 4_500, 9_000
 HEADERS = {"User-Agent": "pm-sensor-correction research script (github.com/pboric)"}
 
 _spent: deque = deque()  # (timestamp, weight)
@@ -45,12 +46,13 @@ def wait_for_budget(w: float) -> None:
         now = time.time()
         while _spent and now - _spent[0][0] > 86_400:
             _spent.popleft()
+        last_min = sum(x for t, x in _spent if now - t <= 60)
         last_hour = sum(x for t, x in _spent if now - t <= 3_600)
         last_day = sum(x for _, x in _spent)
-        if last_hour + w <= HOURLY_BUDGET and last_day + w <= DAILY_BUDGET:
+        if last_min + w <= MINUTE_BUDGET and last_hour + w <= HOURLY_BUDGET and last_day + w <= DAILY_BUDGET:
             _spent.append((now, w))
             return
-        time.sleep(60)
+        time.sleep(5)
 
 
 def needed_requests() -> pd.DataFrame:
@@ -111,7 +113,7 @@ def main() -> None:
                     target.write_text(resp.text)
                     break
                 if resp.status_code == 429:
-                    print("rate limited; pausing 15 min", flush=True)
+                    print(f"rate limited ({resp.text[:120]}); pausing 15 min", flush=True)
                     time.sleep(900)
                     continue
                 print(f"{api} {r.cell}: HTTP {resp.status_code} {resp.text[:200]}", flush=True)
