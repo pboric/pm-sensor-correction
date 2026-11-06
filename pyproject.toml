@@ -1,7 +1,7 @@
 [project]
 name = "pm-sensor-correction"
 version = "0.1.0"
-description = "Add your description here"
+description = "Correcting low-cost PM sensors (Sensor.Community) against EEA reference stations during Saharan dust, smoke and humid air"
 authors = [
     { name = "Petar Krešimir Borić", email = "112004618+pboric@users.noreply.github.com" }
 ]
