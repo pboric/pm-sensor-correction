@@ -205,7 +205,7 @@ that has no co-located reference.
 
 ## Walkthrough notebook (Croatian)
 
-[`notebooks/vodic_kroz_analizu.ipynb`](notebooks/vodic_kroz_analizu.ipynb) goes through the whole analysis step by step in Croatian: data, the CAMS reanalysis check, time alignment, sensor errors, the κ-Köhler correction, why validation is grouped by area (with a random-split comparison), results, robustness checks, feature importance and practice questions. It runs in a few minutes on the processed data: `uv run jupyter lab`.
+[`notebooks/vodic_kroz_analizu.ipynb`](notebooks/vodic_kroz_analizu.ipynb) goes through the whole analysis step by step in Croatian: data, the CAMS reanalysis check, time alignment, sensor errors, the κ-Köhler correction, why validation is grouped by area (with a random-split comparison), results, robustness checks, feature importance and a short Q&A. It runs in a few minutes on the processed data: `uv run jupyter lab`.
 
 ## Reproduce
 
