@@ -1,8 +1,15 @@
 """Train and compare correction methods for low-cost PM sensors.
 
-Validation: grouped 5-fold cross-validation where each group is a set of stations
-(and the sensors attached to them), so every prediction is made for a station the
-model has never seen. This mimics deploying corrected sensors in a new city.
+Period: 2024-2025 only. For 2022-2023 Open-Meteo serves the CAMS European
+reanalysis, which assimilates measurements from EEA stations - the same stations used
+here as the reference. In those years CAMS PM tracks the reference far more closely
+(see src/robustness.py), so models using CAMS would partly be shown the answer.
+From 2024 the CAMS values are archived forecasts, as a real-time system would use.
+
+Validation: grouped 5-fold cross-validation where each group is an area: stations
+within 50 km of each other (and the sensors attached to them) are always held out
+together, so every prediction is made for an area the model has never seen. This
+mimics deploying corrected sensors in a new city.
 
 Methods (each fitted on the training folds only):
   raw           uncorrected sensor value
@@ -30,10 +37,13 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 from sklearn.model_selection import GroupKFold
+from sklearn.neighbors import BallTree
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data" / "processed" / "matched.parquet"
 RESULTS = ROOT / "results"
+YEARS = (2024, 2025)  # CAMS = archived forecasts (2022-2023 is reanalysis, see docstring)
+GROUP_KM = 50         # stations closer than this are held out together
 
 WEATHER = ["relative_humidity_2m", "temperature_2m", "dew_point_2m", "boundary_layer_height",
            "wind_speed_10m", "precipitation", "cloud_cover", "surface_pressure"]
@@ -44,9 +54,10 @@ GBM_PARAMS = dict(n_estimators=600, learning_rate=0.05, num_leaves=63, min_child
                   subsample=0.8, subsample_freq=1, colsample_bytree=0.8, verbose=-1)
 
 
-def station_groups(df: pd.DataFrame) -> pd.Series:
-    """Connected components of the sensor-station graph, so a sensor near two stations
-    never ends up in both training and test data."""
+def area_groups(df: pd.DataFrame, km: float = GROUP_KM) -> pd.Series:
+    """Validation groups: stations are linked if they are within `km` of each other or
+    share a sensor; each connected set is one group. km=0 gives one group per station
+    (plus shared sensors)."""
     parent: dict = {}
 
     def find(x):
@@ -58,7 +69,13 @@ def station_groups(df: pd.DataFrame) -> pd.Series:
 
     for s, st in df[["sensor_id", "ref_station_code"]].drop_duplicates().itertuples(index=False):
         parent[find(("s", s))] = find(("st", st))
-    return df["ref_station_code"].map(lambda st: find(("st", st)))
+    if km > 0:
+        st = df.groupby("ref_station_code")[["ref_lat", "ref_lon"]].first()
+        xy = np.radians(st.to_numpy())
+        for code, near in zip(st.index, BallTree(xy, metric="haversine").query_radius(xy, r=km / 6371)):
+            for j in near:
+                parent[find(("st", code))] = find(("st", st.index[j]))
+    return df["ref_station_code"].map(lambda st: find(("st", st))[1])  # label = a station code
 
 
 def add_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -71,11 +88,11 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     df["sensor_type"] = df["sensor_type"].astype("category")
 
     # Episode flags (evaluation labels only, never model inputs)
-    ref_ratio = df["pm25_ref"] / df["pm10_ref"].where(df["pm10_ref"] > 0)
+    df["ref_ratio"] = df["pm25_ref"] / df["pm10_ref"].where(df["pm10_ref"] > 0)
     month = df["time"].dt.tz_localize(None).dt.to_period("M")
     co_median = df.groupby(["cell", month])["carbon_monoxide"].transform("median")
-    df["is_dust"] = (df["dust"] >= 10) & (ref_ratio <= 0.5)
-    df["is_smoke"] = ((df["carbon_monoxide"] >= 1.5 * co_median) & (ref_ratio >= 0.75)
+    df["is_dust"] = (df["dust"] >= 10) & (df["ref_ratio"] <= 0.5)
+    df["is_smoke"] = ((df["carbon_monoxide"] >= 1.5 * co_median) & (df["ref_ratio"] >= 0.75)
                       & df["time"].dt.month.between(5, 9))
     df["is_humid"] = df["relative_humidity_2m"] >= 85
     return df
@@ -126,46 +143,66 @@ def metrics(y: np.ndarray, p: np.ndarray) -> dict:
             "bias": np.mean(p - y), "ref_mean": y.mean()}
 
 
-def main() -> None:
+def load(years=YEARS) -> pd.DataFrame:
+    """Matched hours with weather + CAMS for the chosen years, episode flags added."""
     df = add_features(pd.read_parquet(DATA))
     df = df.dropna(subset=["relative_humidity_2m", "temperature_2m", "dust"])  # need weather + CAMS
-    df["group"] = station_groups(df)
-    print(f"{len(df):,} hours with weather+CAMS; {df['group'].nunique()} independent station groups; "
-          f"dust hours {df['is_dust'].sum():,}, smoke hours {df['is_smoke'].sum():,}, "
-          f"humid hours {df['is_humid'].sum():,}", flush=True)
+    return df[df["time"].dt.year.isin(years)].reset_index(drop=True)
 
+
+def cross_validate(df: pd.DataFrame, group_col: str = "group", train_rows=None, test_rows=None,
+                   log: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Grouped 5-fold CV for both targets. Optional train_rows/test_rows (functions returning a boolean
+    mask) restrict which rows of the training and test folds are used, e.g. for a time hold-out."""
     rows, pred_frames = [], []
     for target, (lc, ref) in TARGETS.items():
         d = df.dropna(subset=[lc, ref]).reset_index(drop=True)
         out = {k: np.full(len(d), np.nan) for k in
                ("raw", "linear", "linear_rh", "kohler", "gbm_weather", "gbm_full", "gbm_no_sensor")}
-        for fold, (tr, te) in enumerate(GroupKFold(n_splits=5).split(d, groups=d["group"])):
+        for fold, (tr, te) in enumerate(GroupKFold(n_splits=5).split(d, groups=d[group_col])):
+            if train_rows is not None:
+                tr = tr[train_rows(d.iloc[tr]).to_numpy()]
+                te = te[test_rows(d.iloc[te]).to_numpy()]
             p = fit_predict(d.iloc[tr], d.iloc[te], lc, ref)
-            print(f"  {target} fold {fold + 1}/5 done (kappa={p.pop('_kappa')})", flush=True)
+            kappa = p.pop("_kappa")
+            if log:
+                print(f"  {target} fold {fold + 1}/5 done (kappa={kappa})", flush=True)
             for k, v in p.items():
                 out[k][te] = v
+        tested = ~np.isnan(out["raw"])
         y = d[ref].to_numpy()
-        for subset, mask in (("all", np.ones(len(d), bool)), ("dust", d["is_dust"].to_numpy()),
-                             ("smoke", d["is_smoke"].to_numpy()), ("humid", d["is_humid"].to_numpy()),
-                             ("normal", ~(d["is_dust"] | d["is_smoke"] | d["is_humid"]).to_numpy())):
+        for subset, mask in (("all", tested), ("dust", tested & d["is_dust"].to_numpy()),
+                             ("smoke", tested & d["is_smoke"].to_numpy()),
+                             ("humid", tested & d["is_humid"].to_numpy()),
+                             ("normal", tested & ~(d["is_dust"] | d["is_smoke"] | d["is_humid"]).to_numpy())):
             for method, p in out.items():
                 rows.append({"target": target, "subset": subset, "method": method, **metrics(y[mask], p[mask])})
-        pf = d[["sensor_id", "ref_station_code", "ref_country", "time", ref, "is_dust", "is_smoke", "is_humid",
-                "relative_humidity_2m", "dust"]].copy()
+        pf = d.loc[tested, ["sensor_id", "ref_station_code", "ref_country", group_col, "time", ref, "ref_ratio",
+                            "is_dust", "is_smoke", "is_humid", "relative_humidity_2m", "dust"]].copy()
         for k, v in out.items():
-            pf[f"pred_{k}"] = v
+            pf[f"pred_{k}"] = v[tested]
         pf["target"] = target
         pred_frames.append(pf.rename(columns={ref: "ref"}))
+    return pd.DataFrame(rows), pd.concat(pred_frames, ignore_index=True)
 
+
+def main() -> None:
+    df = load()
+    df["group"] = area_groups(df)
+    print(f"{df['time'].min():%Y-%m-%d} to {df['time'].max():%Y-%m-%d}: {len(df):,} hours with weather+CAMS, "
+          f"{df['sensor_id'].nunique()} sensors, {df['ref_station_code'].nunique()} stations, "
+          f"{df['ref_country'].nunique()} countries; {df['group'].nunique()} independent areas (stations within "
+          f"{GROUP_KM} km grouped); dust hours {df['is_dust'].sum():,}, smoke hours {df['is_smoke'].sum():,}, "
+          f"humid hours {df['is_humid'].sum():,}", flush=True)
+    res, pred = cross_validate(df)
     RESULTS.mkdir(exist_ok=True)
-    res = pd.DataFrame(rows)
     res.to_csv(RESULTS / "metrics.csv", index=False, float_format="%.3f")
-    pd.concat(pred_frames).to_parquet(RESULTS / "predictions.parquet", index=False)
+    pred.to_parquet(RESULTS / "predictions.parquet", index=False)
     show = res.pivot_table(index=["target", "subset"], columns="method", values="rmse").round(1)
-    print("\nRMSE (ug/m3) on unseen stations:\n", show[["raw", "linear", "linear_rh", "kohler", "gbm_weather",
-                                                       "gbm_full", "gbm_no_sensor"]].to_string())
-    print("\nR2 on unseen stations:\n", res.pivot_table(index=["target", "subset"], columns="method",
-                                                       values="r2").round(2).to_string())
+    print("\nRMSE (ug/m3) on unseen areas:\n", show[["raw", "linear", "linear_rh", "kohler", "gbm_weather",
+                                                    "gbm_full", "gbm_no_sensor"]].to_string())
+    print("\nR2 on unseen areas:\n", res.pivot_table(index=["target", "subset"], columns="method",
+                                                    values="r2").round(2).to_string())
 
 
 if __name__ == "__main__":

@@ -2,14 +2,16 @@
 
 figures/<name>_light.png and figures/<name>_dark.png
   coarse_underestimation  how much PM10 the sensor sees vs how coarse the air is
-  rmse_by_condition       error of each correction method on unseen stations
+  rmse_by_condition       error of each correction method on unseen areas
   dust_episode            one Saharan dust episode: reference vs raw vs corrected
   bias_vs_humidity        average error by relative humidity
+  cams_check              why 2022-2023 is left out: CAMS reanalysis vs forecasts
 
 Colours follow a colour-blind-checked categorical palette (validated light + dark);
 each method keeps the same colour in every figure.
 """
 
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -19,11 +21,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from train_evaluate import GROUP_KM, YEARS  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 FIG = ROOT / "figures"
 MATCHED = ROOT / "data" / "processed" / "matched.parquet"
 PRED = ROOT / "results" / "predictions.parquet"
 METRICS = ROOT / "results" / "metrics.csv"
+CAMS_CHECK = ROOT / "results" / "cams_check.csv"
 
 THEMES = {
     "light": dict(surface="#fcfcfb", ink="#0b0b0b", ink2="#52514e", muted="#898781", grid="#e1e0d9",
@@ -85,8 +91,8 @@ def coarse_underestimation(mode, m):
     ax.set_ylabel("Sensor PM10 as % of reference (median)")
     ax.set_xlabel("Reference PM2.5 / PM10 ratio (how fine the particles are)")
     titles(fig, t, "Cheap sensors miss coarse particles",
-           f"In dusty, coarse air the sensor sees only about a quarter of the true PM10. "
-           f"{len(d):,} matched hours, 2022–2025.")
+           f"In very coarse air the sensor sees only {g.values[0]:.0%} of the true PM10. "
+           f"{len(d):,} matched hours, {YEARS[0]}–{YEARS[-1]}.")
     save(fig, "coarse_underestimation", mode)
 
 
@@ -110,19 +116,22 @@ def rmse_by_condition(mode, met):
     h, l = axes[0].get_legend_handles_labels()
     fig.legend(h, l, loc="upper left", bbox_to_anchor=(0.02, 0.86), ncol=5, frameon=False, fontsize=9,
                labelcolor=t["ink2"], handlelength=1.2, columnspacing=1.4)
-    titles(fig, t, "Error on stations the model never saw (lower is better)",
-           "5-fold cross-validation grouped by station. Dust and smoke defined from CAMS + the reference "
-           "PM2.5/PM10 ratio.")
+    titles(fig, t, "Error in areas the model never saw (lower is better)",
+           f"5-fold cross-validation; stations within {GROUP_KM} km are held out together. {YEARS[0]}–{YEARS[-1]}. "
+           "Dust and smoke defined from CAMS + the reference PM2.5/PM10 ratio.")
     save(fig, "rmse_by_condition", mode)
 
 
+# Example episode: the well-documented Saharan dust event of April 2024 at Stuttgart-Bad Cannstatt,
+# one of the days with the most dust hours in the data (24 of 24). Fixed so the example stays the same
+# between runs; the summary statistics, not this example, carry the results.
+EPISODE = dict(sensor=69437, station="DEBW013", day="2024-04-08")
+
+
 def pick_dust_episode(pred):
-    p = pred[(pred["target"] == "pm10")].copy()
-    p["day"] = p["time"].dt.floor("D")
-    daily = p.groupby(["sensor_id", "ref_station_code", "day"]).agg(dust_hours=("is_dust", "sum"),
-                                                                    n=("ref", "size"))
-    daily = daily[daily["n"] >= 20].sort_values("dust_hours", ascending=False)
-    sensor, station, day = daily.index[0]
+    p = pred[(pred["target"] == "pm10")]
+    sensor, station = EPISODE["sensor"], EPISODE["station"]
+    day = pd.Timestamp(EPISODE["day"], tz="UTC")
     start, end = day - pd.Timedelta(days=3), day + pd.Timedelta(days=4)
     ep = p[(p["sensor_id"] == sensor) & (p["ref_station_code"] == station)
            & (p["time"] >= start) & (p["time"] < end)].sort_values("time")
@@ -160,7 +169,7 @@ def dust_episode(mode, pred, m):
     title_day = ep.loc[ep["dust"].idxmax(), "time"]
     titles(fig, t, f"A Saharan dust episode: {info['ref_station_name']}, {info['ref_country']} "
                    f"({title_day:%B %Y})",
-           "Hourly PM10. The model never saw this station during training.")
+           f"Hourly PM10. The model never saw this station, or any station within {GROUP_KM} km, during training.")
     import matplotlib.dates as mdates
     ax2.xaxis.set_major_formatter(mdates.DateFormatter("%d %b"))
     save(fig, "dust_episode", mode)
@@ -190,19 +199,51 @@ def bias_vs_humidity(mode, pred):
     h, l = axes[0].get_legend_handles_labels()
     fig.legend(h, l, loc="upper left", bbox_to_anchor=(0.02, 0.86), ncol=3, frameon=False, fontsize=9,
                labelcolor=t["ink2"])
-    titles(fig, t, "How the error changes with humidity", "Average error on unseen stations; 0 = no bias.")
+    titles(fig, t, "How the error changes with humidity", "Average error in unseen areas; 0 = no bias.")
     save(fig, "bias_vs_humidity", mode)
+
+
+def cams_check(mode, cc):
+    t = THEMES[mode]
+    fig, ax = plt.subplots(figsize=(11, 4.6), facecolor=t["surface"])
+    fig.subplots_adjust(top=0.74, bottom=0.12, left=0.07, right=0.97)
+    setup(ax, t)
+    x = np.arange(len(cc))
+    split = int(np.argmax(cc["quarter"].str[:4].astype(int) >= YEARS[0]))
+    ax.axvspan(-0.5, split - 0.5, color=t["grid"], alpha=0.6, linewidth=0)
+    ax.text(split / 2 - 0.5, 1.0, "CAMS reanalysis (assimilates\nthe same EEA stations)", ha="center", va="top",
+            color=t["ink2"], fontsize=9)
+    ax.text((split + len(cc)) / 2 - 0.5, 1.0, "CAMS archived forecasts\n(used for all results)", ha="center",
+            va="top", color=t["ink2"], fontsize=9)
+    for col, label, color in (("r_pm25_cams", "CAMS PM2.5", t["gbm_no_sensor"]),
+                              ("r_pm25_lc", "Low-cost sensor PM2.5", t["raw"])):
+        ax.plot(x, cc[col], color=color, linewidth=2, marker="o", markersize=6, markeredgecolor=t["surface"],
+                markeredgewidth=1.5, label=label)
+    ax.set_xticks(x, [q.replace("Q", " Q") if q.endswith("Q1") else q[-2:] for q in cc["quarter"]])
+    ax.set_ylim(0.4, 1.02)
+    ax.set_ylabel("Correlation with reference PM2.5\n(median over stations)")
+    h, l = ax.get_legend_handles_labels()
+    fig.legend(h, l, loc="upper left", bbox_to_anchor=(0.02, 0.86), ncol=2, frameon=False, fontsize=9,
+               labelcolor=t["ink2"])
+    titles(fig, t, "Why 2022–2023 is left out: there, CAMS had already seen the reference stations",
+           "Until 2023 a 10 km model matches each station as well as a sensor standing next to it. "
+           "CAMS drops in January 2024, when Open-Meteo switches to forecasts.")
+    save(fig, "cams_check", mode)
 
 
 def main() -> None:
     m = pd.read_parquet(MATCHED)
+    m = m[m["time"].dt.year.isin(YEARS)]
     pred = pd.read_parquet(PRED)
     met = pd.read_csv(METRICS)
+    cc = pd.read_csv(CAMS_CHECK) if CAMS_CHECK.exists() else None
     for mode in THEMES:
         coarse_underestimation(mode, m)
         rmse_by_condition(mode, met)
         info, day = dust_episode(mode, pred, m)
         bias_vs_humidity(mode, pred)
+        if cc is not None:
+            cams_check(mode, cc)
     print(f"figures written to {FIG.relative_to(ROOT)}/; dust episode: {info['ref_station_name']}, "
           f"{info['ref_country']}, {day:%Y-%m-%d}")
 

@@ -1,7 +1,8 @@
 """Join low-cost sensor hours with reference hours (and weather/dust when available).
 
 - applies the per-station time corrections from check_time_alignment.py
-- drops pairs that do not follow the reference at all (excluded_pairs.csv)
+- drops pairs that do not follow the reference at all, or are too short to check
+  (excluded_pairs.csv)
 - adds Open-Meteo weather and CAMS dust/aerosol for the station's grid cell,
   if those files have been downloaded
 
@@ -43,7 +44,8 @@ def load_meteo() -> pd.DataFrame | None:
 
 def main() -> None:
     pairs = pd.read_csv(INTERIM / "pairs_selected.csv")
-    excluded = pd.read_csv(INTERIM / "excluded_pairs.csv").rename(columns={"station": "ref_station_code"})
+    excluded = (pd.read_csv(INTERIM / "excluded_pairs.csv")[["sensor_id", "station"]]
+                .rename(columns={"station": "ref_station_code"}))
     pairs = pairs.merge(excluded.assign(_bad=1), on=["sensor_id", "ref_station_code"], how="left")
     pairs = pairs[pairs["_bad"].isna()].drop(columns="_bad")
     pairs["cell"] = ((pairs["ref_lat"] / CELL).round().astype(int).astype(str) + "_"

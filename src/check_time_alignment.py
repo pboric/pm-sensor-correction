@@ -64,10 +64,16 @@ def main() -> None:
     print(f"\nstation time corrections applied: {dict(zip(fixed['station'], fixed['offset_h']))}")
 
     # Pairs where the sensor does not follow the reference at all (broken or not
-    # measuring the same air) are excluded from the study.
-    bad = res[res["r_best"] < MIN_R]
-    bad[["sensor_id", "station"]].to_csv(INTERIM / "excluded_pairs.csv", index=False)
+    # measuring the same air) are excluded from the study, and so are pairs with too
+    # little overlap (< 500 h) to run this check at all.
+    bad = res.loc[res["r_best"] < MIN_R, ["sensor_id", "station"]].assign(reason=f"r < {MIN_R}")
+    checked = set(zip(res["sensor_id"], res["station"]))
+    short = pairs.loc[[(s, st) not in checked for s, st in zip(pairs["sensor_id"], pairs["ref_station_code"])],
+                      ["sensor_id", "ref_station_code"]].rename(columns={"ref_station_code": "station"})
+    short = short.assign(reason="under 500 h overlap, cannot be checked")
+    pd.concat([bad, short]).to_csv(INTERIM / "excluded_pairs.csv", index=False)
     print(f"pairs excluded for no relationship (r < {MIN_R}): {bad[['sensor_id', 'station']].values.tolist()}")
+    print(f"pairs excluded as too short to check: {len(short)}")
 
 
 if __name__ == "__main__":
