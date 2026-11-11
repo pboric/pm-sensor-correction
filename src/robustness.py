@@ -7,11 +7,17 @@
    cross-validated on 2022-2023 alone to show how much the reanalysis would flatter the
    CAMS-based models.
 2. Grouping: one group per station instead of 50 km areas.
-3. Time hold-out: train on 2024, test on 2025 (areas held out as well).
-4. CAMS dust false alarms: hours with CAMS dust >= 10 ug/m3 where the reference air is not
+3. Time hold-out: train on 2024, test on 2025, and the reverse (areas held out as well).
+4. No shared time: the main test holds out areas, but the training folds still contain
+   the same hours from other areas, and a dust episode covers many areas at once. Here
+   the weeks are split at random into two halves; the model is trained on one half and
+   tested on the other (areas held out as well), so it never sees the tested episode
+   anywhere. A control trained on the same half it is tested on has the same amount of
+   training data, so the difference between the two is the effect of shared time alone.
+5. CAMS dust false alarms: hours with CAMS dust >= 10 ug/m3 where the reference air is not
    coarse (PM2.5/PM10 > 0.5). Does the model over-correct when CAMS is wrong?
-5. Uncertainty: 95 % intervals for the change in RMSE, resampling whole areas
-   (cluster bootstrap, 2,000 resamples).
+6. Uncertainty: 95 % intervals for the change in RMSE, resampling whole areas
+   (cluster bootstrap, 2,000 resamples), for the main result and for check 4.
 
 Outputs: results/cams_check.csv, results/robustness.csv, results/bootstrap.csv
 """
@@ -58,6 +64,13 @@ def rmse_rows(pred: pd.DataFrame, check: str, subsets: dict) -> list[dict]:
                              "rmse": np.sqrt(np.mean(e ** 2)) if len(gg) else np.nan,
                              "bias": e.mean() if len(gg) else np.nan})
     return rows
+
+
+def week_halves(df: pd.DataFrame, seed: int = 0) -> np.ndarray:
+    """0 or 1 for every row: its 7-day block, assigned at random to one of two halves."""
+    week = (df["time"] - df["time"].min()).dt.days // 7
+    half = np.random.default_rng(seed).permutation(week.max() + 1) % 2
+    return half[week.to_numpy()]
 
 
 def bootstrap(pred: pd.DataFrame, n: int = 2000, seed: int = 42) -> pd.DataFrame:
@@ -109,8 +122,20 @@ def main() -> None:
     _, p_time = te.cross_validate(df, train_rows=lambda x: x["time"].dt.year == 2024,
                                   test_rows=lambda x: x["time"].dt.year == 2025, log=False)
     rows += rmse_rows(p_time, "train_2024_test_2025", standard)
+    _, p_rev = te.cross_validate(df, train_rows=lambda x: x["time"].dt.year == 2025,
+                                 test_rows=lambda x: x["time"].dt.year == 2024, log=False)
+    rows += rmse_rows(p_rev, "train_2025_test_2024", standard)
 
-    print("4. CAMS dust false alarms (main predictions)", flush=True)
+    print("4. no shared time: train on one half of the weeks, test on the other", flush=True)
+    df["half"] = week_halves(df)
+    p_other = pd.concat([te.cross_validate(df, train_rows=lambda x, h=h: x["half"] != h,
+                                           test_rows=lambda x, h=h: x["half"] == h, log=False)[1] for h in (0, 1)])
+    rows += rmse_rows(p_other, "other_weeks", standard)
+    p_same = pd.concat([te.cross_validate(df, train_rows=lambda x, h=h: x["half"] == h,
+                                          test_rows=lambda x, h=h: x["half"] == h, log=False)[1] for h in (0, 1)])
+    rows += rmse_rows(p_same, "same_weeks_control", standard)
+
+    print("5. CAMS dust false alarms (main predictions)", flush=True)
     main_pred = pd.read_parquet(RESULTS / "predictions.parquet")
     rows += rmse_rows(main_pred, "main", standard | {
         "cams_dust_any": lambda g: g["dust"] >= 10,
@@ -118,8 +143,9 @@ def main() -> None:
     rob = pd.DataFrame(rows)
     rob.to_csv(RESULTS / "robustness.csv", index=False, float_format="%.3f")
 
-    print("5. cluster bootstrap", flush=True)
-    bs = bootstrap(main_pred)
+    print("6. cluster bootstrap", flush=True)
+    bs = pd.concat([bootstrap(main_pred).assign(check="main"), bootstrap(p_other).assign(check="other_weeks")])
+    bs.insert(0, "check", bs.pop("check"))
     bs.to_csv(RESULTS / "bootstrap.csv", index=False, float_format="%.3f")
 
     pd.set_option("display.width", 200)

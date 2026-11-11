@@ -24,7 +24,9 @@ Copernicus Atmosphere Monitoring Service (CAMS). Earlier years are left out on p
    68 % too low in dust hours. The error (RMSE) in unseen areas falls from 35.1 µg/m³ uncorrected
    to 30.0 with κ-Köhler, but to **18.1 µg/m³** (−48 %) with a gradient-boosting model that also
    knows the CAMS dust forecast. Against κ-Köhler that is 40 % lower (95 % interval 34–50 % when
-   whole areas are resampled).
+   whole areas are resampled). In the strictest test, where the model has never seen the tested
+   weeks anywhere, it is 20.6 µg/m³, still 32 % lower than κ-Köhler (27–37 %); see
+   [Robustness checks](#robustness-checks).
 4. **The sensor still matters.** The same model without the sensor (CAMS + weather only) is worse
    in every condition: PM2.5 RMSE 7.9 vs 6.3 µg/m³ overall, PM10 21.4 vs 18.1 in dust.
 5. **Smoke is a different problem.** Smoke particles are fine, so the sensor does see them, but in
@@ -103,6 +105,9 @@ for. RMSE in µg/m³:
 | Main result (areas held out) | 30.0 | 21.4 | **18.1** | 7.9 | **6.3** |
 | One group per station instead of per area | 29.9 | 20.5 | **16.9** | 7.6 | **6.0** |
 | Train on 2024, test on 2025 (unseen areas) | 31.4 | 27.4 | **24.9** | 8.7 | **6.7** |
+| Train on 2025, test on 2024 (unseen areas) | 29.6 | 24.2 | **19.0** | 10.0 | **7.3** |
+| No shared time: train on half the weeks, test on the other half (unseen areas) | 30.2 | 26.3 | **20.6** | 8.7 | **6.6** |
+| Control: train and test on the same half of the weeks (unseen areas) | 29.9 | 21.4 | **18.4** | 8.0 | **6.3** |
 | 2022–2023, CAMS reanalysis (for comparison) | 22.6 | **12.7** | 13.1 | 8.3 | **6.2** |
 
 - **Holding out areas matters a little.** With one group per station, a test station can have a
@@ -110,7 +115,20 @@ for. RMSE in µg/m³:
   stricter and more honest test.
 - **A year ahead.** Trained on 2024 only and tested on 2025, the full model is still the best in every
   condition, but its lead in dust shrinks (24.9 vs 31.4 µg/m³ for κ-Köhler): with one year of
-  training data there are few dust episodes to learn from.
+  training data there are few dust episodes to learn from. 2025 was also a quiet year, with 1,001 of
+  the 4,145 dust hours. The other way round (trained on 2025, tested on 2024) the full model reaches
+  19.0 vs 29.6 µg/m³ in dust.
+- **No shared time.** The main test holds out areas, but the training data still contain the same
+  hours from other areas, and a dust episode covers many areas at once, so the model can partly learn
+  each episode from the neighbours. To remove that, the weeks are split at random into two halves and
+  the model is trained on one half and tested on the other, in unseen areas. The full model's PM10
+  dust RMSE is then 20.6 µg/m³ instead of 18.1: 32 % lower than κ-Köhler (95 % interval 27–37 %).
+  The control row, trained on the same half it is tested on, uses the same amount of data and gives
+  18.4, so about 2 µg/m³ of the main dust result comes from shared time and almost none from the
+  amount of data. The no-sensor model loses more (21.4 → 26.3), so the sensor's contribution grows:
+  the full model is 22 % better than it (16–28 %) instead of 15 %. Over all hours the effect is small
+  (PM10 12.1 → 12.6, PM2.5 6.3 → 6.6). A real-time system that is retrained as new reference data
+  arrive sits between the two tests.
 - **Uncertainty.** Resampling whole areas (cluster bootstrap, 2,000 resamples), the full model's PM10
   dust RMSE is 40 % lower than κ-Köhler (95 % interval 34–50 %) and 15 % lower than the no-sensor
   model (7–22 %).
@@ -184,7 +202,8 @@ Seven approaches are compared, from no correction to machine learning:
 and the sensors attached to them, are always in the same fold, so every prediction is made for an
 area the model never saw during training. No training station shares a city or a weather/CAMS grid
 cell with the station being tested. This mimics the real use case: calibrating sensors in a new city
-that has no co-located reference.
+that has no co-located reference. The training folds do contain the same hours from other areas; a
+stricter test without any shared time is among the [robustness checks](#robustness-checks).
 
 ## Limitations
 
